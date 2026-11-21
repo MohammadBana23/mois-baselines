@@ -1,0 +1,14 @@
+# Paper-to-code mapping
+
+Source: Hu, Liu & Du (2024), [Strategic Demonstration Selection for Improved Fairness in LLM In-Context Learning](https://aclanthology.org/2024.emnlp-main.425/), §2, §5, Algorithm 1 and Figure 4.
+
+| Stage | Paper evidence | Reconstruction and uncertainty |
+| --- | --- | --- |
+| Partition | §5.1 uses 4 subsets of binary Z × Y | Explicit membership in the paper order (1,0), (1,1), (0,0), (0,1). Caller supplies numerical vectors because exact FCG preprocessing is underspecified. |
+| Clustering | Algorithm 1 lines 1–15, §5.2 uses 8 KMeans centers and 5 nearest records each | NumPy Lloyd, Euclidean distance, k-means++ with ten starts; explicit stable-ID tie breaking and union of records across centers. The paper's list-style pseudocode and exact overlap semantics remain ambiguous. Insufficient distinct points or unique candidates stop. |
+| Roulette | §5.1 gives higher scoring records higher selection probability | Sequential weighted sampling without replacement, per-cell seed plus cell index, stable ID order, no extra genetic operators. These RNG and ordering details are conventions. |
+| Fitness | Algorithm 1 lines 25–32, §5.2: 0.5 max(F1−F1zero, 0.05) + 0.5 max(Reo−Reozero, 0.05) | Positive-class F1 and a cached deterministic zero-shot Fake result. Eq. 5 is min(TPR0/(TPR1+ε), FPR0/(FPR1+ε)). Orientation preserved, no clipping or min/max symmetrization. Printed epsilon is ambiguous; the synthetic config uses 1e−6 as an explicit hypothesis. Ratios can exceed 1 under this formula despite the surrounding stated range. Empty rate denominators stop. |
+| History | §5.1 initializes with p and averages scores from rounds in which a record appears | 0.05 until first observation; mean of observed set scores without pseudo-observation. Ten rounds per cell. |
+| Ranking | §5.1, §5.2 and Figure 4 give per-cell top-ranked quota selection at K=4 or 8 | Explicit rectangular allocations across group and outcome; deterministic stable ID ties and per-cell ordering. Exact author prompt order remains unresolved. No test split is used. |
+
+Upstream inspection of [FCG/fcg.py](https://github.com/FairXAI/Strategic_ICL_Tabular/blob/main/FCG/fcg.py) (blob `c023ea66c261582a659880819620fd4707c32c8d5b`) found Fairlearn EOR, a branch on the predictive option for EOR, and an extra factor of two. [FCG/main.py](https://github.com/FairXAI/Strategic_ICL_Tabular/blob/main/FCG/main.py) (blob `7fd42a0913785a090e41895fe17880106fe0fc`) has pending setup and output steps. The P3-B1 supplied-archive audit additionally found an initial pseudo-observation in the node history. A root LICENSE lookup returned 404. This independent implementation uses published descriptions and includes no upstream code or datasets. Fidelity is limited to the documented reconstruction. Table 4, original preprocessing and numerical equivalence remain unverified.

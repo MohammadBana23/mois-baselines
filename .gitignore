@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.env*
+data/
+models/
+*.zip
+*.gguf
+*.csv
+*.jsonl
+*.checkpoint.json

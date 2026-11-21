@@ -1,0 +1,6 @@
+mode = "synthetic"
+k = 4
+quotas = [1, 1, 1, 1]
+epsilon = 0.000001
+seed = 47
+budget = 164

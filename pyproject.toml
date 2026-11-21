@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mois-baselines"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = ["numpy==2.3.5"]
+
+[tool.setuptools.packages.find]
+include = ["fcg_paper_faithful*", "fcg_ia5*"]
+exclude = ["*.tests*", "*.configs*"]
