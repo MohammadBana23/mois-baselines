@@ -1,12 +1,16 @@
-# FCG-IA5 adaptation
+<div dir="rtl" align="right">
 
-| WORK-03 proposal | Offline implementation and scope |
-| --- | --- |
-| C01–C02 | Support-only min-max with clipping; sorted Support categorical vocabularies, unknown bucket and block normalization. Distances use ten allowlisted predictors. Sex/race are metadata only. The group encoding is White Male, White Female, Non-white Male, Non-white Female. Each group has a negative and positive cell. |
-| C03–C05 | Weighted unique vectors for fitting; original distinct IDs for per-center neighbors; global per-cell union. Fewer than five eligible IDs stops. Preserves duplicates under distinct IDs. Seed 47+cell index, at most eight centers, five neighbors. Center hashes and supply are reported. NumPy implementation follows weighted Lloyd and k-means++ with ten starts, 300 iterations and absolute squared center-shift tolerance 1e−4. scikit-learn initializer, empty-cluster handling and tolerance semantics can differ. This dependency deviation needs resolution before freeze. |
-| C06–C07 | **PROPOSED** positive F1 and fairness 1−max(ΔTPR,ΔFPR), spanning four groups. Same weighted improvement floor as Algorithm 1. Zero denominators stop and valid zero rates remain zero. Ledger uses observed score means and an initial 0.05 only until the first observation. |
-| C08–C09 | 10 rounds × 8 cells, 5 distinct IDs within each cell per draw, RNG 10047+cell index, stable prompt ordering. **PROPOSED** final search picks one winner per eligible cell and maximizes summed score across sets covering all four groups and having 2 or 3 positives. Stable-ID tie breaking. A fixed global set results. |
-| C10/C14 offline subset | Atomic journal; checksum and data/config binding; RNG/ledger replay via completed prefix; reserve each synthetic batch against the budget before execution. Invalid results stop and consume the reservation. One writer per checkpoint. This fixture runner has no production RAM/session guards, telemetry or reuse contract. |
-| C11–C14 real execution | Pending separate cohort provenance and assessment design, real renderer/parser and runtime parity, approval of budget, resource guards and permission. 13,608 is a proposal only. Real calibration mode fails closed. |
+# قرارداد مصوب و اجرای آفلاین FCG-IA5
 
-The fake request uses demonstrations by ID plus a label-free query signal. Development labels are read only for metrics after predictions. The fitness history can influence later draws by design. The synthetic test does not establish integrity of real cohort membership or that future prompt/rendering code is leakage-free. Cell-specific fitness does not measure the efficacy of a final mixed-cell prompt.
+- برای فاصله، فقط ده ویژگی مجازِ Support به کار می‌روند. دسته‌ها از Support برازش می‌شوند و دستهٔ ناشناخته جای مستقل دارد. برای تقسیم هشت سلول و ساخت Prompt، گروه و برچسب Support به‌صورت مجزا در دسترس‌اند.
+- در هر سلول، بردار یکتا با وزن فراوانی به scikit-learn 1.8.0 داده می‌شود. تنظیمات k-means++، ده شروع، Lloyd، حداکثر ۳۰۰ تکرار، tol=1e-4 و seed برابر ۴۷ به‌علاوهٔ شمارهٔ سلول است. حداکثر هشت مرکز و پنج همسایه از هر مرکز. کاندیدها با شناسهٔ پایدار یکتا و مرتب می‌شوند. کف عرضه پنج شناسه در هر سلول است.
+- ممیزی قبلی در ۸ مورد از ۱۲ ورودی ساختگی تغییر اتحاد کاندید را نشان داد. NumPy قبلی شروع تک‌پیشنهادی، آستانهٔ مطلق و نگهداری مرکز خالی داشت. scikit-learn شروع حریصانه، آستانهٔ وابسته به پراکندگی و جابه‌جایی برای خوشهٔ خالی دارد. نسخهٔ Paper-Faithful همچنان پیاده‌سازی مستقل قبلی را به کار می‌برد.
+- C06 و C09 مصوب‌اند. معیار Fitness، F1 مثبت و یک منهای شکاف Equalized Odds چهارگروهی است. کف دو بهبود نسبت به zero-shot برابر ۰٫۰۵ است. مخرج صفر موجب توقف می‌شود. میانگین امتیازهای مشاهده‌شده وزن نمونه‌گیری را می‌سازد.
+- پس از ده دور در هر سلول، پنج شناسه از پنج سلول و چهار گروه، با دو یا سه مورد مثبت و بیشترین مجموع امتیاز انتخاب می‌شوند. تساوی با شناسهٔ پایدار شکسته می‌شود. امتیاز تک‌سلولی اثربخشی ترکیب نهایی را تضمین نمی‌کند.
+- قالب‌ساز و تجزیه‌گر آفلاین از فایل llm_smoke.py در Commit تأییدشدهٔ پایان‌نامه استخراج شده‌اند. فقط Fake Predictor قطعی فعال است. هر Query موفق همراه هش Prompt و شناسه ذخیره می‌شود. رزرو حل‌نشده مانع تکرار است. شکست قطعی parser ثبت می‌شود و فراخوانی صریح بعدی فقط با بودجهٔ باقی‌مانده امکان تلاش دارد. نسخهٔ Checkpoint جدید ۲ و استفاده تک‌نویسنده است.
+- ناظر آفلاین شمارندهٔ RAM آزاد و اوج را از نمونه‌دهندهٔ تزریقی می‌گیرد. آستانهٔ پیش‌پرواز ۶ GiB، کف ۵۱۲ MiB برای دو نمونهٔ متوالی و اوج ۱۲ GiB است. اتصال مانیتور واقعی، قفل نویسنده و سیاست رفع رزرو نامعلوم برای اجرای واقعی باز است.
+- استفاده از P2-C کامل صرفاً برای کالیبراسیون توسعه‌ایِ مواجهه‌دیده مشروطاً پذیرفته شده است. ۱۴ همتای Support دارد. مجموعهٔ سنجش مستقل و بودجهٔ ۱۳٬۶۰۸ در انتظار تأیید جداگانه‌اند.
+
+[مرجع قالب‌ساز و تجزیه‌گر](https://github.com/MohammadBana23/mois-thesis/blob/2b2b4ed7c749b7d7c8a53905348e5605f80e1e8f/scripts/llm_smoke.py)
+
+</div>

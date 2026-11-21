@@ -3,14 +3,17 @@ from dataclasses import asdict
 from hashlib import sha256
 import json
 import os
+import sys
 from pathlib import Path
 from random import Random
 from tempfile import NamedTemporaryFile
 
 import numpy as np
+import sklearn
 
 from fcg_paper_faithful.src.core import ScoreLedger, evolution_score
-from fcg_paper_faithful.src.synthetic import evaluate, validate_development
+from fcg_paper_faithful.src.synthetic import validate_development
+from .prompt_contract import FEATURES, NUMERIC, parse_prediction, render
 from .algorithm import CELLS, candidate_pools, proposed_final, proposed_metrics
 
 
@@ -31,7 +34,15 @@ def save(path, state):
         temporary.unlink(missing_ok=True)
 
 
-def run(support, development, *, checkpoint, budget, max_batches=81, mode="synthetic"):
+def fake_response(messages):
+    return json.dumps({"prediction": int(digest(messages), 16) % 2})
+
+
+def synthetic_features(signal):
+    return {key: signal if key in NUMERIC else "synthetic" for key in FEATURES}
+
+
+def run(support, development, *, checkpoint, budget, max_batches=81, mode="synthetic", sample_resources=None):
     """Execute complete synthetic batches. Use one process per checkpoint."""
     if mode != "synthetic":
         raise PermissionError("Real calibration is disabled")
@@ -39,15 +50,20 @@ def run(support, development, *, checkpoint, budget, max_batches=81, mode="synth
     size = len(development)
     if type(budget) is not int or budget < 81 * size or type(max_batches) is not int or max_batches < 0:
         raise ValueError("Insufficient prepaid synthetic budget or invalid batch limit")
+    if sample_resources is not None:
+        available, peak = sample_resources()
+        if available < 6 * 2**30 or peak > 12 * 2**30:
+            raise RuntimeError("Resource preflight failed")
     pools, diagnostics = candidate_pools(support)
     signature = digest({
-        "format": 1, "numpy": np.__version__, "budget": budget,
+        "format": 2, "numpy": np.__version__, "sklearn": sklearn.__version__,
+        "python": list(sys.version_info[:3]), "budget": budget,
         "support": [asdict(row) for row in sorted(support, key=lambda row: row.identifier)],
         "development": [asdict(row) for row in development],
         "pools": list(pools.values()), "centers": list(diagnostics.values()),
     })
     path = Path(checkpoint)
-    state = {"signature": signature, "attempts": 0, "events": []}
+    state = {"signature": signature, "attempts": 0, "events": [], "pending": []}
     if path.exists():
         wrapper = json.loads(path.read_text(encoding="utf-8"))
         state = wrapper["state"]
@@ -55,8 +71,14 @@ def run(support, development, *, checkpoint, budget, max_batches=81, mode="synth
             raise ValueError("Checkpoint input or integrity mismatch")
     events, attempts = state["events"], state["attempts"]
     if (type(attempts) is not int or not size * len(events) <= attempts <= budget
-            or attempts % size or len(events) > 81):
+            or len(events) > 81):
         raise ValueError("Invalid checkpoint prefix or accounting")
+    pending = state["pending"]
+    if (len(pending) > size or (pending and len(events) == 81)
+            or attempts < size * len(events) + len(pending)):
+        raise ValueError("Invalid pending query accounting")
+    support_by_id = {row.identifier: row for row in support}
+    low_samples = 0
     ledgers = {cell: ScoreLedger(pools[cell]) for cell in CELLS}
     rng = [Random(10047 + i) for i in range(8)]
     baseline = None
@@ -71,24 +93,58 @@ def run(support, development, *, checkpoint, budget, max_batches=81, mode="synth
                 raise ValueError("Checkpoint draw differs from deterministic prefix")
             predictions = tuple(event["predictions"])
         else:
-            if state["attempts"] + size > budget:
-                raise RuntimeError("Synthetic attempt budget exhausted")
-            # Reserve the complete batch before prediction. A crash consumes the reservation.
-            state["attempts"] += size
-            save(path, state)
-            predictions = evaluate(selected, development)
+            demos = []
+            for identifier in selected:
+                demo = support_by_id[identifier]
+                demos.append((demo.features | {"sex": demo.sex, "race": demo.race}, demo.label))
+            for position, row in enumerate(development):
+                if position < len(pending):
+                    entry = pending[position]
+                    if entry["query"] != row.identifier or entry["selected"] != list(selected):
+                        raise ValueError("Checkpoint query does not match deterministic prefix")
+                    if entry["status"] == "ok":
+                        continue
+                    if entry["status"] != "invalid":
+                        raise RuntimeError("Unresolved prediction reservation")
+                else:
+                    entry = {"query": row.identifier, "selected": list(selected)}
+                if sample_resources is not None:
+                    available, peak = sample_resources()
+                    low_samples = low_samples + 1 if available < 512 * 2**20 else 0
+                    if low_samples >= 2 or peak > 12 * 2**30:
+                        raise RuntimeError("Resource limit exceeded")
+                if state["attempts"] >= budget:
+                    raise RuntimeError("Synthetic attempt budget exhausted")
+                messages = render(synthetic_features(row.signal), demos)
+                if position == len(pending):
+                    pending.append(entry)
+                state["attempts"] += 1
+                entry.update(status="reserved", prompt_sha256=digest(messages))
+                save(path, state)
+                try:
+                    predicted = parse_prediction(fake_response(messages))
+                except ValueError:
+                    entry["status"] = "invalid"
+                    entry["invalid_attempts"] = entry.get("invalid_attempts", 0) + 1
+                    save(path, state)
+                    raise
+                entry.update(status="ok", prediction=predicted)
+                save(path, state)
+            predictions = tuple(entry["prediction"] for entry in pending)
         metrics = proposed_metrics(development, predictions)
         if index:
             ledger.update(selected, evolution_score(metrics, baseline))
         else:
             baseline = metrics
         if index == len(events):
-            events.append({"index": index, "selected": list(selected), "predictions": predictions})
+            events.append({"index": index, "selected": list(selected), "predictions": predictions,
+                           "queries": list(pending)})
+            pending.clear()
             save(path, state)
     return {
         "status": "COMPLETE" if end == 81 else "PAUSED",
         "predictions_attempted_or_reserved": state["attempts"],
-        "predictions_completed": size * len(events),
+        "predictions_completed": size * len(events) + sum(q["status"] == "ok" for q in pending),
         "fitness_evaluations": max(0, len(events) - 1),
         "diagnostics": diagnostics,
         "selected": proposed_final(ledgers) if end == 81 else None,

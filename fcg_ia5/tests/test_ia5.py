@@ -60,3 +60,31 @@ class IA5Tests(unittest.TestCase):
         dev = tuple(replace(row, label=0) for row in development())
         with self.assertRaisesRegex(ValueError, "Undefined F1"):
             proposed_metrics(dev, (0,) * len(dev))
+
+
+
+class ApprovedKMeansTests(unittest.TestCase):
+    def test_weighted_reference_centers_and_candidate_union(self):
+        from hashlib import sha256
+        import sklearn
+        from sklearn.cluster import KMeans
+        from fcg_paper_faithful.src.core import nearest
+
+        self.assertEqual(sklearn.__version__, "1.8.0")
+        rows = support()
+        rows = rows + (replace(rows[0], identifier="synthetic:support:extra"),)
+        encoder = Encoder.fit(rows)
+        cell_rows = [row for row in rows if (row.sex, row.race, row.label) == ("Male", "White", 0)]
+        points = {row.identifier: encoder.transform(row.features) for row in cell_rows}
+        unique, weights = np.unique(list(points.values()), axis=0, return_counts=True)
+        self.assertIn(3, weights)
+        ref = KMeans(n_clusters=5, init="k-means++", n_init=10, max_iter=300,
+                     tol=1e-4, algorithm="lloyd", random_state=47).fit(unique, sample_weight=weights)
+        pools, diagnostics = candidate_pools(rows)
+        self.assertEqual(pools[(0, 0)], tuple(sorted({i for group in nearest(points, ref.cluster_centers_, 5) for i in group})))
+        self.assertEqual(diagnostics[(0, 0)]["centers_sha256"], sha256(ref.cluster_centers_.astype("<f8").tobytes()).hexdigest())
+        self.assertEqual(diagnostics[(0, 0)]["inertia"], float(ref.inertia_))
+
+    def test_missing_final_ledger_is_explicit(self):
+        with self.assertRaisesRegex(ValueError, "BASELINE_NOT_READY"):
+            proposed_final({})

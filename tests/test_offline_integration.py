@@ -39,7 +39,7 @@ class OfflineIntegrationTests(unittest.TestCase):
             self.assertEqual(set((r.sex, r.race) for r in picked), set(GROUPS))
             self.assertEqual(len({(r.sex, r.race, r.label) for r in picked}), 5)
             self.assertIn(sum(r.label for r in picked), (2, 3))
-            with patch("fcg_ia5.src.runner.evaluate", side_effect=AssertionError("prediction was invoked")):
+            with patch("fcg_ia5.src.runner.fake_response", side_effect=AssertionError("prediction was invoked")):
                 self.assertEqual(run(rows, dev, checkpoint=path, **params), replay)
             with self.assertRaises(ValueError):
                 run(rows, dev[::-1], checkpoint=path, **params)
@@ -53,13 +53,13 @@ class OfflineIntegrationTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "failure.checkpoint.json"
             options = {"checkpoint": path, "budget": 656}
-            with patch("fcg_ia5.src.runner.evaluate", return_value=(2,) * 8):
+            with patch("fcg_ia5.src.runner.fake_response", return_value='{"prediction":2}'):
                 with self.assertRaises(ValueError):
                     run(support(), development(), **options)
             state = json.loads(path.read_text())["state"]
-            self.assertEqual((state["attempts"], state["events"]), (8, []))
+            self.assertEqual((state["attempts"], state["events"]), (1, []))
             result = run(support(), development(), **options)
-            self.assertEqual((result["predictions_completed"], result["predictions_attempted_or_reserved"]), (648, 656))
+            self.assertEqual((result["predictions_completed"], result["predictions_attempted_or_reserved"]), (648, 649))
 
     def test_insufficient_or_exhausted_budget_and_real_mode_guard(self):
         with TemporaryDirectory() as directory:
@@ -69,8 +69,57 @@ class OfflineIntegrationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run(support(), development(), checkpoint=path, budget=647)
             self.assertFalse(path.exists())
-            with patch("fcg_ia5.src.runner.evaluate", return_value=(2,) * 8):
+            with patch("fcg_ia5.src.runner.fake_response", return_value='{"prediction":2}'):
                 with self.assertRaises(ValueError):
                     run(support(), development(), checkpoint=path, budget=648)
             with self.assertRaisesRegex(RuntimeError, "exhausted"):
                 run(support(), development(), checkpoint=path, budget=648)
+
+
+
+class PromptJournalTests(unittest.TestCase):
+    def test_render_no_query_label_and_resume_without_repeating(self):
+        from fcg_ia5.src.runner import fake_response
+
+        def capture(checkpoint, rows):
+            with patch("fcg_ia5.src.runner.fake_response", wraps=fake_response) as fake:
+                run(support(), rows, checkpoint=checkpoint, budget=648, max_batches=2)
+                return [call.args[0] for call in fake.call_args_list]
+
+        rows = development()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = capture(root / "first.json", rows)
+            second = capture(root / "second.json", tuple(replace(r, label=1-r.label) for r in rows))
+            self.assertEqual(first, second)
+            demo_text, query = first[8][-1]["content"].split("\nUnlabeled query:\n")
+            self.assertEqual(len(demo_text.splitlines()[1:]), 5)
+            self.assertEqual(set(json.loads(query)), {"features"})
+            self.assertEqual(len(json.loads(query)["features"]), 12)
+            self.assertTrue(all("label" in json.loads(line) for line in demo_text.splitlines()[1:]))
+
+            path = root / "resources.json"
+            safe = (7 * 2**30, 0)
+            low = (511 * 2**20, 0)
+            with patch("fcg_ia5.src.runner.fake_response", wraps=fake_response) as fake:
+                with self.assertRaisesRegex(RuntimeError, "Resource limit"):
+                    run(support(), rows, checkpoint=path, budget=648, max_batches=1,
+                        sample_resources=iter([safe, safe, low, low]).__next__)
+                self.assertEqual(fake.call_count, 2)
+                fake.reset_mock()
+                run(support(), rows, checkpoint=path, budget=648, max_batches=1)
+                self.assertEqual(fake.call_count, 6)
+            event = json.loads(path.read_text())["state"]["events"][0]
+            self.assertEqual([q["query"] for q in event["queries"]], [r.identifier for r in rows])
+            self.assertTrue(all(q["status"] == "ok" and len(q["prompt_sha256"]) == 64
+                                for q in event["queries"]))
+
+    def test_unknown_attempt_stops_without_retry(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "timeout.json"
+            with patch("fcg_ia5.src.runner.fake_response", side_effect=TimeoutError):
+                with self.assertRaises(TimeoutError):
+                    run(support(), development(), checkpoint=path, budget=648, max_batches=1)
+            with patch("fcg_ia5.src.runner.fake_response", side_effect=AssertionError):
+                with self.assertRaisesRegex(RuntimeError, "Unresolved"):
+                    run(support(), development(), checkpoint=path, budget=648, max_batches=1)
