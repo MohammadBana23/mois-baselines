@@ -1,11 +1,11 @@
 # MOIS baselines
 
-Independent offline research implementations. Both runners use an in-process deterministic fake predictor and synthetic fixtures. Python 3.12 and NumPy 2.3.5 are required.
+Independent offline research implementations. Both runners use an in-process deterministic fake predictor and synthetic fixtures. Python 3.12 and NumPy 2.3.5 are required. FCG-IA5 uses scikit-learn 1.8.0.
 
 | Path | Purpose |
 | --- | --- |
 | [fcg_paper_faithful](fcg_paper_faithful) | Four-cell reconstruction of Hu et al. FCG, with explicit engineering assumptions |
-| [fcg_ia5](fcg_ia5) | Eight-cell intersectional adaptation with proposed fitness and quota policies |
+| [fcg_ia5](fcg_ia5) | Eight-cell intersectional adaptation with researcher-approved fitness and quota policies |
 | [docs](docs) | Paper mapping, adaptation differences and reproducibility |
 | [tests](tests) | Synthetic fixtures and cross-component integration |
 

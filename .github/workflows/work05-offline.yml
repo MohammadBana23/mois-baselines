@@ -1,0 +1,23 @@
+name: WORK-05 offline KMeans verification
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, synchronize, reopened, closed]
+permissions:
+  contents: read
+jobs:
+  offline-verify:
+    if: github.event.action != 'closed' || github.event.pull_request.merged
+    runs-on: ubuntu-latest
+    env:
+      OMP_NUM_THREADS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12.16'
+      - run: python -m pip install numpy==2.3.5 scikit-learn==1.8.0
+      - run: python -m unittest tests.test_kmeans_audit tests.test_offline_integration tests.test_work05_contract -v
+      - run: python -m unittest discover -s fcg_ia5/tests -v
+      - run: python -m unittest discover -s fcg_paper_faithful/tests -v

@@ -5,8 +5,9 @@ from itertools import combinations
 from math import fsum, isfinite, sqrt
 
 import numpy as np
+from sklearn.cluster import KMeans
 
-from fcg_paper_faithful.src.core import cluster, nearest, rates
+from fcg_paper_faithful.src.core import nearest, rates
 
 NUMERIC = ("age", "capital-gain", "capital-loss", "hours-per-week")
 CATEGORICAL = ("workclass", "education", "marital-status", "occupation", "relationship", "native-country")
@@ -79,7 +80,10 @@ def candidate_pools(support):
             raise ValueError(f"BASELINE_NOT_READY: fewer than five IDs in {cell}")
         unique, weights = np.unique(np.stack(list(points.values())), axis=0, return_counts=True)
         count = min(8, len(unique))
-        centers = cluster(unique, weights, count, 47 + index)
+        fit = KMeans(n_clusters=count, init="k-means++", n_init=10,
+                     max_iter=300, tol=1e-4, algorithm="lloyd", random_state=47 + index)
+        fit.fit(unique, sample_weight=weights)
+        centers = fit.cluster_centers_
         neighbors = nearest(points, centers, min(5, len(points)))
         pool = tuple(sorted({identifier for ids in neighbors for identifier in ids}))
         if len(pool) < 5:
@@ -87,20 +91,22 @@ def candidate_pools(support):
         pools[cell] = pool
         diagnostics[cell] = {
             "rows": len(points), "distinct_vectors": len(unique), "clusters": count,
-            "pool_size": len(pool), "centers_sha256": sha256(centers.astype("<f8").tobytes()).hexdigest(),
+            "pool_size": len(pool), "inertia": float(fit.inertia_), "centers_sha256": sha256(centers.astype("<f8").tobytes()).hexdigest(),
         }
     return pools, diagnostics
 
 
 def proposed_metrics(development, predictions):
-    """C06 PROPOSED: positive F1 and one minus intersectional EOdds gap."""
+    """C06 approved adaptation: positive F1 and one minus intersectional EOdds gap."""
     f1, by_group = rates(tuple(row.group for row in development),
                          tuple(row.label for row in development), predictions, range(4))
     return f1, 1 - max(max(values) - min(values) for values in zip(*by_group))
 
 
 def proposed_final(ledgers):
-    """C09 PROPOSED: five cells, four groups, two or three positives."""
+    """C09 approved adaptation: five cells, four groups, two or three positives."""
+    if set(ledgers) != set(CELLS) or any(not ledger.ids for ledger in ledgers.values()):
+        raise ValueError("BASELINE_NOT_READY: incomplete final candidate supply")
     options = []
     for cells in combinations(CELLS, 5):
         if len({g for g, _ in cells}) != 4 or sum(y for _, y in cells) not in (2, 3):
