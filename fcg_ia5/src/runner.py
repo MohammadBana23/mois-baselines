@@ -14,6 +14,7 @@ import sklearn
 from fcg_paper_faithful.src.core import ScoreLedger, evolution_score
 from fcg_paper_faithful.src.synthetic import validate_development
 from .prompt_contract import FEATURES, NUMERIC, parse_prediction, render
+from .offline_safety import checkpoint_lock, raw_query
 from .algorithm import CELLS, candidate_pools, proposed_final, proposed_metrics
 
 
@@ -43,9 +44,16 @@ def synthetic_features(signal):
 
 
 def run(support, development, *, checkpoint, budget, max_batches=81, mode="synthetic", sample_resources=None):
-    """Execute complete synthetic batches. Use one process per checkpoint."""
+    """Run synthetic-only calibration mechanics under an OS writer lock."""
     if mode != "synthetic":
         raise PermissionError("Real calibration is disabled")
+    if not 0 <= max_batches <= 81:
+        raise ValueError("Invalid synthetic batch limit")
+    with checkpoint_lock(checkpoint):
+        return _run(support, development, checkpoint, budget, max_batches, sample_resources)
+
+
+def _run(support, development, checkpoint, budget, max_batches, sample_resources):
     validate_development(development)
     size = len(development)
     if type(budget) is not int or budget < 81 * size or type(max_batches) is not int or max_batches < 0:
@@ -55,19 +63,27 @@ def run(support, development, *, checkpoint, budget, max_batches=81, mode="synth
         if available < 6 * 2**30 or peak > 12 * 2**30:
             raise RuntimeError("Resource preflight failed")
     pools, diagnostics = candidate_pools(support)
-    signature = digest({
-        "format": 2, "numpy": np.__version__, "sklearn": sklearn.__version__,
+    manifest = {
+        "format": 3, "mode": "synthetic", "model": None,
+        "code": {p.name: sha256(p.read_bytes()).hexdigest() for p in (
+            Path(__file__), Path(__file__).with_name("algorithm.py"),
+            Path(__file__).with_name("offline_safety.py"),
+            Path(__file__).with_name("prompt_contract.py"),
+        )}, "numpy": np.__version__, "sklearn": sklearn.__version__,
         "python": list(sys.version_info[:3]), "budget": budget,
-        "support": [asdict(row) for row in sorted(support, key=lambda row: row.identifier)],
-        "development": [asdict(row) for row in development],
-        "pools": list(pools.values()), "centers": list(diagnostics.values()),
-    })
+        "support_sha256": digest([asdict(row) for row in sorted(support, key=lambda row: row.identifier)]),
+        "development_sha256": digest([asdict(row) for row in development]),
+        "pools_sha256": digest(list(pools.values())), "centers": list(diagnostics.values()),
+        "settings": {"iterations": 10, "cells": 8, "shots": 5,
+                     "preflight_gib": 6, "available_floor_mib": 512, "peak_gib": 12},
+    }
+    signature = digest(manifest)
     path = Path(checkpoint)
-    state = {"signature": signature, "attempts": 0, "events": [], "pending": []}
+    state = {"signature": signature, "manifest": manifest, "attempts": 0, "events": [], "pending": []}
     if path.exists():
         wrapper = json.loads(path.read_text(encoding="utf-8"))
         state = wrapper["state"]
-        if wrapper["digest"] != digest(state) or state["signature"] != signature:
+        if wrapper["digest"] != digest(state) or state["signature"] != signature or state["manifest"] != manifest:
             raise ValueError("Checkpoint input or integrity mismatch")
     events, attempts = state["events"], state["attempts"]
     if (type(attempts) is not int or not size * len(events) <= attempts <= budget
@@ -115,7 +131,7 @@ def run(support, development, *, checkpoint, budget, max_batches=81, mode="synth
                         raise RuntimeError("Resource limit exceeded")
                 if state["attempts"] >= budget:
                     raise RuntimeError("Synthetic attempt budget exhausted")
-                messages = render(synthetic_features(row.signal), demos)
+                messages = render(raw_query(synthetic_features(row.signal)), demos)
                 if position == len(pending):
                     pending.append(entry)
                 state["attempts"] += 1

@@ -123,3 +123,28 @@ class PromptJournalTests(unittest.TestCase):
             with patch("fcg_ia5.src.runner.fake_response", side_effect=AssertionError):
                 with self.assertRaisesRegex(RuntimeError, "Unresolved"):
                     run(support(), development(), checkpoint=path, budget=648, max_batches=1)
+
+
+    def test_real_sampler_writer_lock_and_manifest(self):
+        from fcg_ia5.src.offline_safety import checkpoint_lock, raw_support, sample_current_process
+        from fcg_ia5.src.runner import synthetic_features
+
+        row = synthetic_features(12) | {"sex": "Female", "race": "Asian-Pac-Islander",
+                                        "y": "1", "race_binary": "Non-white", "group": "Non-white Female"}
+        prompt, group, label = raw_support(row)
+        self.assertEqual((group, label, prompt["race"]), (("Female", "Non-white"), 1, "Asian-Pac-Islander"))
+        self.assertNotIn("y", prompt)
+        with self.assertRaisesRegex(ValueError, "metadata"):
+            raw_support(row | {"group": "White Female"})
+        if __import__("sys").platform in ("win32", "linux"):
+            self.assertTrue(all(value > 0 for value in sample_current_process()))
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "locked.json"
+            with checkpoint_lock(path):
+                with self.assertRaisesRegex(RuntimeError, "writer"):
+                    run(support(), development(), checkpoint=path, budget=648, max_batches=1)
+            run(support(), development(), checkpoint=path, budget=648, max_batches=1)
+            manifest = json.loads(path.read_text())["state"]["manifest"]
+            self.assertEqual((manifest["format"], manifest["sklearn"], manifest["model"]), (3, "1.8.0", None))
+            self.assertTrue(all(len(value) == 64 for value in manifest["code"].values()))
