@@ -43,15 +43,18 @@ def synthetic_features(signal):
     return {key: signal if key in NUMERIC else "synthetic" for key in FEATURES}
 
 
-def run(support, development, *, checkpoint, budget, max_batches=81, mode="synthetic", sample_resources=None):
+def run(support, development, *, checkpoint, budget, max_batches=81, mode="synthetic", sample_resources=None,
+        execution=None):
     """Run synthetic-only calibration mechanics under an OS writer lock."""
     if mode != "synthetic":
         raise PermissionError("Real calibration is disabled")
+    if execution is not None and sample_resources is not None:
+        raise ValueError("Use the execution adapter resource guard")
     with checkpoint_lock(checkpoint):
-        return _run(support, development, checkpoint, budget, max_batches, sample_resources)
+        return _run(support, development, checkpoint, budget, max_batches, sample_resources, execution)
 
 
-def _run(support, development, checkpoint, budget, max_batches, sample_resources):
+def _run(support, development, checkpoint, budget, max_batches, sample_resources, execution):
     validate_development(development)
     size = len(development)
     if type(budget) is not int or budget < 81 * size or type(max_batches) is not int or max_batches < 0:
@@ -60,6 +63,8 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
         available, peak = sample_resources()
         if available < 6 * 2**30 or peak > 12 * 2**30:
             raise RuntimeError("Resource preflight failed")
+    if execution is not None:
+        execution.check()
     pools, diagnostics = candidate_pools(support)
     manifest = {
         "format": 3, "mode": "synthetic", "model": None,
@@ -75,6 +80,8 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
         "settings": {"iterations": 10, "cells": 8, "shots": 5,
                      "preflight_gib": 6, "available_floor_mib": 512, "peak_gib": 12},
     }
+    if execution is not None:
+        manifest["execution"] = execution.profile
     signature = digest(manifest)
     path = Path(checkpoint)
     state = {"signature": signature, "manifest": manifest, "attempts": 0, "events": [], "pending": []}
@@ -118,6 +125,8 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
                         raise ValueError("Checkpoint query does not match deterministic prefix")
                     if entry["status"] == "ok":
                         continue
+                    if entry["status"] == "invalid" and execution is not None:
+                        raise RuntimeError("Invalid prediction requires explicit disposition")
                     if entry["status"] != "invalid":
                         raise RuntimeError("Unresolved prediction reservation")
                 else:
@@ -129,14 +138,23 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
                         raise RuntimeError("Resource limit exceeded")
                 if state["attempts"] >= budget:
                     raise RuntimeError("Synthetic attempt budget exhausted")
-                messages = render(raw_query(synthetic_features(row.signal)), demos)
+                query = raw_query(synthetic_features(row.signal))
+                messages = render(query, demos) if execution is None else execution.render(query, demos)
+                if execution is not None:
+                    native, token_count = execution.prepare(messages)
                 if position == len(pending):
                     pending.append(entry)
                 state["attempts"] += 1
                 entry.update(status="reserved", prompt_sha256=digest(messages))
+                if execution is not None:
+                    entry.update(native_prompt_sha256=sha256(native.encode("utf-8")).hexdigest(),
+                                 prompt_tokens=token_count)
                 save(path, state)
                 try:
-                    predicted = parse_prediction(fake_response(messages))
+                    if execution is None:
+                        predicted = parse_prediction(fake_response(messages))
+                    else:
+                        predicted = execution.parse(execution.complete(native))
                 except ValueError:
                     entry["status"] = "invalid"
                     entry["invalid_attempts"] = entry.get("invalid_attempts", 0) + 1
