@@ -100,8 +100,27 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
     if path.exists():
         wrapper = json.loads(path.read_text(encoding="utf-8"))
         state = wrapper["state"]
-        if wrapper["digest"] != digest(state) or state["signature"] != signature or state["manifest"] != manifest:
+        if wrapper["digest"] != digest(state) or state["signature"] != digest(state["manifest"]):
             raise ValueError("Checkpoint input or integrity mismatch")
+        replacement = False
+        if state["manifest"] != manifest:
+            legacy = manifest | {"budget": 13608, "code": manifest["code"] | {
+                "runner.py": "2343d385bfa1468cb156113985806caba7c1016ca10929ad46f8c1f36ca4c4e2"}}
+            replacement = (
+                execution is not None and budget == 13609 and state["manifest"] == legacy
+                and sha256(path.read_bytes()).hexdigest() == "b73d3abe6f7a2e82fad3388d5902d3677ebc8a08cd472509c2a543b95fe01948"
+                and state["attempts"] == 142 and not state["events"]
+                and len(state["pending"]) == 142
+                and state["pending"][-1]["status"] == "unknown"
+                and all(item["status"] == "ok" for item in state["pending"][:-1])
+            )
+            if not replacement:
+                raise ValueError("Checkpoint input or integrity mismatch")
+            state["manifest"], state["signature"] = manifest, signature
+    else:
+        replacement = False
+        if budget == 13609:
+            raise ValueError("Replacement budget requires the existing checkpoint")
     events, attempts = state["events"], state["attempts"]
     if (type(attempts) is not int or not size * len(events) <= attempts <= budget
             or len(events) > 81):
@@ -141,9 +160,11 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
                         continue
                     if entry["status"] == "invalid" and execution is not None:
                         raise RuntimeError("Invalid prediction requires explicit disposition")
-                    if entry["status"] != "invalid":
+                    replacing = replacement and index == 0 and position == 141
+                    if entry["status"] != "invalid" and not replacing:
                         raise RuntimeError("Unresolved prediction reservation")
                 else:
+                    replacing = False
                     entry = {"query": row.identifier, "selected": list(selected)}
                 if sample_resources is not None:
                     available, peak = sample_resources()
@@ -159,6 +180,17 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
                     native, token_count = execution.prepare(messages)
                 if position == len(pending):
                     pending.append(entry)
+                if replacing:
+                    if (entry["prompt_sha256"] != digest(messages)
+                            or entry["native_prompt_sha256"] != sha256(native.encode("utf-8")).hexdigest()):
+                        raise ValueError("Replacement prompt differs from attempt 142")
+                    state["replacement_audit"] = {
+                        "decision": "PM-00: one replacement only; physical ceiling 13609",
+                        "original_attempt": 142, "original": dict(entry), "replacement_attempt": 143,
+                    }
+                    entry = {"query": row.identifier, "selected": list(selected), "attempt": 143}
+                    pending[position] = entry
+                    replacement = False
                 state["attempts"] += 1
                 entry.update(status="reserved", prompt_sha256=digest(messages))
                 if execution is not None:
