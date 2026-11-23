@@ -44,17 +44,19 @@ def synthetic_features(signal):
 
 
 def run(support, development, *, checkpoint, budget, max_batches=81, mode="synthetic", sample_resources=None,
-        execution=None):
+        execution=None, verified_features=None):
     """Run synthetic-only calibration mechanics under an OS writer lock."""
     if mode != "synthetic":
         raise PermissionError("Real calibration is disabled")
     if execution is not None and sample_resources is not None:
         raise ValueError("Use the execution adapter resource guard")
+    if verified_features is not None and execution is None:
+        raise ValueError("Verified inputs require an execution adapter")
     with checkpoint_lock(checkpoint):
-        return _run(support, development, checkpoint, budget, max_batches, sample_resources, execution)
+        return _run(support, development, checkpoint, budget, max_batches, sample_resources, execution, verified_features)
 
 
-def _run(support, development, checkpoint, budget, max_batches, sample_resources, execution):
+def _run(support, development, checkpoint, budget, max_batches, sample_resources, execution, verified_features):
     validate_development(development)
     size = len(development)
     if type(budget) is not int or budget < 81 * size or type(max_batches) is not int or max_batches < 0:
@@ -82,6 +84,16 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
     }
     if execution is not None:
         manifest["execution"] = execution.profile
+    if verified_features is not None:
+        support_features, query_features, expected_pool_hash = verified_features
+        if set(support_features) != {row.identifier for row in support} or set(query_features) != {row.identifier for row in development}:
+            raise ValueError("Verified feature IDs differ")
+        canonical = [[list(cell), [item.removeprefix("synthetic:support:") for item in pools[cell]]]
+                     for cell in pools]
+        observed = sha256(json.dumps(canonical, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()
+        if observed != expected_pool_hash:
+            raise ValueError("Candidate pool hash mismatch")
+        manifest["verified_features"] = digest([support_features, query_features, observed])
     signature = digest(manifest)
     path = Path(checkpoint)
     state = {"signature": signature, "manifest": manifest, "attempts": 0, "events": [], "pending": []}
@@ -117,7 +129,9 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
             demos = []
             for identifier in selected:
                 demo = support_by_id[identifier]
-                demos.append((demo.features | {"sex": demo.sex, "race": demo.race}, demo.label))
+                features = (demo.features | {"sex": demo.sex, "race": demo.race}
+                            if verified_features is None else support_features[identifier])
+                demos.append((features, demo.label))
             for position, row in enumerate(development):
                 if position < len(pending):
                     entry = pending[position]
@@ -138,7 +152,8 @@ def _run(support, development, checkpoint, budget, max_batches, sample_resources
                         raise RuntimeError("Resource limit exceeded")
                 if state["attempts"] >= budget:
                     raise RuntimeError("Synthetic attempt budget exhausted")
-                query = raw_query(synthetic_features(row.signal))
+                query = (raw_query(synthetic_features(row.signal)) if verified_features is None
+                         else query_features[row.identifier])
                 messages = render(query, demos) if execution is None else execution.render(query, demos)
                 if execution is not None:
                     native, token_count = execution.prepare(messages)
