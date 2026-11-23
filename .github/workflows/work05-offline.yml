@@ -1,14 +1,13 @@
 name: WORK-05 offline KMeans verification
 on:
-  push:
-    branches: [master]
   pull_request:
     branches: [master]
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, closed]
 permissions:
   contents: read
 jobs:
   offline-verify:
+    if: github.event.action != 'closed' || github.event.pull_request.merged
     runs-on: ubuntu-latest
     env:
       OMP_NUM_THREADS: '1'
