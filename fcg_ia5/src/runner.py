@@ -47,8 +47,6 @@ def run(support, development, *, checkpoint, budget, max_batches=81, mode="synth
     """Run synthetic-only calibration mechanics under an OS writer lock."""
     if mode != "synthetic":
         raise PermissionError("Real calibration is disabled")
-    if not 0 <= max_batches <= 81:
-        raise ValueError("Invalid synthetic batch limit")
     with checkpoint_lock(checkpoint):
         return _run(support, development, checkpoint, budget, max_batches, sample_resources)
 
